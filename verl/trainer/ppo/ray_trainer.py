@@ -46,6 +46,8 @@ from verl.utils.dataset.rl_dataset import RLHFDataset, collate_fn
 from verl.utils.tracking import ValidationGenerationsLogger
 from torch.utils.data import Dataset, RandomSampler, SequentialSampler
 from torchdata.stateful_dataloader import StatefulDataLoader
+from verl.utils.searchr1.env.search.retrieval import get_retriever
+
 
 WorkerType = Type[Worker]
 
@@ -510,6 +512,26 @@ class RayPPOTrainer(object):
         sample_inputs = []
         sample_outputs = []
         sample_scores = []
+
+        gen_config = GenerationConfig(
+            max_turns=self.config.max_turns,
+            max_start_length=self.config.data.max_start_length,
+            max_prompt_length=self.config.data.max_prompt_length,
+            max_response_length=self.config.data.max_response_length,
+            max_obs_length=self.config.data.max_obs_length,
+            num_gpus=self.config.trainer.n_gpus_per_node * self.config.trainer.nnodes,
+            no_think_rl=self.config.algorithm.no_think_rl,
+            search_url = self.config.retriever.url,
+            topk = self.config.retriever.topk,
+        )
+
+        # Agent config preparation
+        generation_manager = LLMGenerationManager(
+            tokenizer=self.tokenizer,
+            actor_rollout_wg=self.actor_rollout_wg,
+            config=gen_config,
+            is_validation = True,
+        )
 
         for test_data in self.val_dataloader:
             test_batch = DataProto.from_single_dict(test_data)
