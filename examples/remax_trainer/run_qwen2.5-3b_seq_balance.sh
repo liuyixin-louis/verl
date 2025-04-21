@@ -4,6 +4,9 @@ export HF_DATASETS_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 
 export VLLM_ATTENTION_BACKEND=XFORMERS
+# export CUDA_VISIBLE_DEVICES=2,3,6,7
+export CUDA_VISIBLE_DEVICES=1,2,3,5
+source /orange/yonghui.wu/yxliu/venv/verl/bin/activate
 
 python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=remax \
@@ -37,7 +40,7 @@ python3 -m verl.trainer.main_ppo \
     trainer.project_name='verl_remax_example_gsm8k' \
     trainer.experiment_name='qwen2.5_3b_function_rm_kl1e-3' \
     trainer.val_before_train=False \
-    trainer.n_gpus_per_node=8 \
+    trainer.n_gpus_per_node=4 \
     trainer.nnodes=1 \
     trainer.save_freq=-1 \
     trainer.test_freq=5 \

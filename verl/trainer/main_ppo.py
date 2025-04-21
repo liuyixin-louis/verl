@@ -81,6 +81,7 @@ def run_ppo(config) -> None:
 class TaskRunner:
 
     def run(self, config):
+        # breakpoint()
         from verl.utils.fs import copy_to_local
         # print initial config
         from pprint import pprint

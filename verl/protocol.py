@@ -178,7 +178,7 @@ class DataProto:
     TensorDict allows you to manipulate a dictionary of Tensors like a single Tensor. Ideally, the tensors with the
     same batch size should be put inside batch.
     """
-    batch: TensorDict = None
+    batch: TensorDict = None 
     non_tensor_batch: Dict = field(default_factory=dict)
     meta_info: Dict = field(default_factory=dict)
 

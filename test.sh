@@ -1,5 +1,8 @@
 source /orange/yonghui.wu/yxliu/venv/verl/bin/activate
-export CUDA_VISIBLE_DEVICES=1
+export CUDA_VISIBLE_DEVICES=7
+NUM_GPUS=$(echo $CUDA_VISIBLE_DEVICES | awk -F',' '{print NF}')
+name=gsm8k_ppo_debug
+
 PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo \
  data.train_files=$HOME/data/gsm8k/train.parquet \
  data.val_files=$HOME/data/gsm8k/test.parquet \
@@ -20,11 +23,13 @@ PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo \
  algorithm.kl_ctrl.kl_coef=0.001 \
  trainer.logger=['console','wandb'] \
  trainer.project_name=verl \
- trainer.experiment_name=gsm8k_ppo \
+ trainer.experiment_name=$name \
  trainer.val_before_train=False \
  trainer.default_hdfs_dir=null \
- trainer.n_gpus_per_node=1 \
+ trainer.n_gpus_per_node=$NUM_GPUS \
  trainer.nnodes=1 \
  trainer.save_freq=10 \
  trainer.test_freq=10 \
- trainer.total_epochs=15 2>&1 | tee verl_demo.log
+ trainer.total_epochs=15 
+#  raise-exception
+#  2>&1 | tee verl_demo.log

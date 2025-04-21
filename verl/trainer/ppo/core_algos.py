@@ -95,10 +95,10 @@ def compute_gae_advantage_return(token_level_rewards: torch.Tensor, values: torc
             nextvalues = values[:, t + 1] if t < gen_len - 1 else 0.0
             delta = token_level_rewards[:, t] + gamma * nextvalues - values[:, t]
             lastgaelam = delta + gamma * lam * lastgaelam
-            advantages_reversed.append(lastgaelam)
-        advantages = torch.stack(advantages_reversed[::-1], dim=1)
+            advantages_reversed.append(lastgaelam) # a list of (bs,); from the last token to the first token
+        advantages = torch.stack(advantages_reversed[::-1], dim=1) # shape (bs, response_length)
 
-        returns = advantages + values
+        returns = advantages + values # this is the estimated return of each (s, a) pair, the q function 
         advantages = verl_F.masked_whiten(advantages, response_mask)
     return advantages, returns
 

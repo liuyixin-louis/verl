@@ -48,7 +48,7 @@ from verl.utils.dataset.rl_dataset import RLHFDataset, collate_fn
 from verl.utils.tracking import ValidationGenerationsLogger
 from torch.utils.data import Dataset, RandomSampler, SequentialSampler
 from torchdata.stateful_dataloader import StatefulDataLoader
-from verl.utils.searchr1.env.search.retrieval import get_retriever
+# from verl.utils.searchr1.env.search.retrieval import get_retriever
 
 
 WorkerType = Type[Worker]
@@ -143,8 +143,8 @@ from verl.utils.torch_functional import masked_mean
 
 
 def apply_kl_penalty(data: DataProto, kl_ctrl: core_algos.AdaptiveKLController, kl_penalty='kl'):
-    responses = data.batch['responses']
-    response_length = responses.size(1)
+    responses = data.batch['responses'] # inshape (bs, response_length)
+    response_length = responses.size(1) 
     token_level_scores = data.batch['token_level_scores']
     batch_size = data.batch.batch_size[0]
     attention_mask = data.batch['attention_mask']
@@ -154,13 +154,13 @@ def apply_kl_penalty(data: DataProto, kl_ctrl: core_algos.AdaptiveKLController, 
     # When apply_kl_penalty, algorithm.use_kl_in_reward=True, so the reference model has been enabled.
     kld = core_algos.kl_penalty(data.batch['old_log_probs'], data.batch['ref_log_prob'],
                                 kl_penalty=kl_penalty)  # (batch_size, response_length)
-    kld = kld * response_mask
+    kld = kld * response_mask # still in shape (batch_size, response_length), but the invalid tokens are masked
     beta = kl_ctrl.value
 
     token_level_rewards = token_level_scores - beta * kld
 
     current_kl = masked_mean(kld, mask=response_mask, axis=-1)  # average over sequence
-    current_kl = torch.mean(current_kl, dim=0).item()
+    current_kl = torch.mean(current_kl, dim=0).item() # average over batch size
 
     # according to https://github.com/huggingface/trl/blob/951ca1841f29114b969b57b26c7d3e80a39f75a0/trl/trainer/ppo_trainer.py#L837
     kl_ctrl.update(current_kl=current_kl, n_steps=batch_size)
@@ -172,10 +172,10 @@ def apply_kl_penalty(data: DataProto, kl_ctrl: core_algos.AdaptiveKLController, 
 
 
 def compute_response_mask(data: DataProto):
-    responses = data.batch['responses']
-    response_length = responses.size(1)
+    responses = data.batch['responses'] # inshape (bs, response_length)
+    response_length = responses.size(1) # inshape (bs, prompt_length + response_length)
     attention_mask = data.batch['attention_mask']
-    return attention_mask[:, -response_length:]
+    return attention_mask[:, -response_length:] # the attention mask for the response part 
 
 
 def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_repeat=1):
@@ -515,25 +515,25 @@ class RayPPOTrainer(object):
         sample_outputs = []
         sample_scores = []
 
-        gen_config = GenerationConfig(
-            max_turns=self.config.max_turns,
-            max_start_length=self.config.data.max_start_length,
-            max_prompt_length=self.config.data.max_prompt_length,
-            max_response_length=self.config.data.max_response_length,
-            max_obs_length=self.config.data.max_obs_length,
-            num_gpus=self.config.trainer.n_gpus_per_node * self.config.trainer.nnodes,
-            no_think_rl=self.config.algorithm.no_think_rl,
-            search_url = self.config.retriever.url,
-            topk = self.config.retriever.topk,
-        )
+        # gen_config = GenerationConfig(
+        #     max_turns=self.config.max_turns,
+        #     max_start_length=self.config.data.max_start_length,
+        #     max_prompt_length=self.config.data.max_prompt_length,
+        #     max_response_length=self.config.data.max_response_length,
+        #     max_obs_length=self.config.data.max_obs_length,
+        #     num_gpus=self.config.trainer.n_gpus_per_node * self.config.trainer.nnodes,
+        #     no_think_rl=self.config.algorithm.no_think_rl,
+        #     search_url = self.config.retriever.url,
+        #     topk = self.config.retriever.topk,
+        # )
 
-        # Agent config preparation
-        generation_manager = LLMGenerationManager(
-            tokenizer=self.tokenizer,
-            actor_rollout_wg=self.actor_rollout_wg,
-            config=gen_config,
-            is_validation = True,
-        )
+        # # Agent config preparation
+        # generation_manager = LLMGenerationManager(
+        #     tokenizer=self.tokenizer,
+        #     actor_rollout_wg=self.actor_rollout_wg,
+        #     config=gen_config,
+        #     is_validation = True,
+        # )
 
         for test_data in self.val_dataloader:
             test_batch = DataProto.from_single_dict(test_data)
@@ -807,7 +807,7 @@ class RayPPOTrainer(object):
                                                               k_partitions=world_size,
                                                               equal_size=True)
         # reorder based on index. The data will be automatically equally partitioned by dispatch function
-        global_idx = torch.tensor([j for partition in global_partition_lst for j in partition])
+        global_idx = torch.tensor([j for partition in global_partition_lst for j in partition]) # this is a flatten operation
         batch.reorder(global_idx)
         global_balance_stats = log_seqlen_unbalance(seqlen_list=global_seqlen_lst,
                                                     partitions=global_partition_lst,
@@ -848,13 +848,14 @@ class RayPPOTrainer(object):
         # we start from step 1
         self.global_steps += 1
         last_val_metrics = None
+        breakpoint()
 
         for epoch in range(self.config.trainer.total_epochs):
             for batch_dict in self.train_dataloader:
                 metrics = {}
                 timing_raw = {}
 
-                batch: DataProto = DataProto.from_single_dict(batch_dict)
+                batch: DataProto = DataProto.from_single_dict(batch_dict) # p, n 
 
                 # pop those keys for generation
                 if 'multi_modal_inputs' in batch.non_tensor_batch.keys():
@@ -913,8 +914,8 @@ class RayPPOTrainer(object):
                         entropys = old_log_prob.batch['entropys']
                         response_masks = batch.batch['response_mask']
                         loss_agg_mode = self.config.actor_rollout_ref.actor.loss_agg_mode
-                        entropy_loss = agg_loss(loss_mat=entropys,
-                                                loss_mask=response_masks,
+                        entropy_loss = agg_loss(loss_mat=entropys, # shape (bs, response_length)
+                                                loss_mask=response_masks, # shape (bs, response_length)
                                                 loss_agg_mode=loss_agg_mode)
                         old_log_prob_metrics = {"actor/entropy_loss": entropy_loss.detach().item()}
                         metrics.update(old_log_prob_metrics)

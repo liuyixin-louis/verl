@@ -191,8 +191,8 @@ def log_seqlen_unbalance(seqlen_list: List[int], partitions: List[List[int]], pr
     min_sum_seqlen = None
     max_sum_seqlen = None
     total_sum_seqlen = 0
-    for offset in range(0, len(seqlen_list), batch_size):
-        cur_sum_seqlen = sum(seqlen_list[offset:offset + batch_size])
+    for offset in range(0, len(seqlen_list), batch_size): # this is the squential partition baseline
+        cur_sum_seqlen = sum(seqlen_list[offset:offset + batch_size]) # this should be a token load count for one given dp rank 
         if min_sum_seqlen is None or cur_sum_seqlen < min_sum_seqlen:
             min_sum_seqlen = cur_sum_seqlen
         if max_sum_seqlen is None or cur_sum_seqlen > max_sum_seqlen:
