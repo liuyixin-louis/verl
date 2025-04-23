@@ -991,15 +991,9 @@ class RayPPOTrainer:
                         entropys = old_log_prob.batch["entropys"]
                         response_masks = batch.batch["response_mask"]
                         loss_agg_mode = self.config.actor_rollout_ref.actor.loss_agg_mode
-<<<<<<< HEAD
                         entropy_loss = agg_loss(loss_mat=entropys, # shape (bs, response_length)
                                                 loss_mask=response_masks, # shape (bs, response_length)
                                                 loss_agg_mode=loss_agg_mode)
-=======
-                        entropy_loss = agg_loss(
-                            loss_mat=entropys, loss_mask=response_masks, loss_agg_mode=loss_agg_mode
-                        )
->>>>>>> 103f90113ff5286267884b25c83ba871f34ae426
                         old_log_prob_metrics = {"actor/entropy_loss": entropy_loss.detach().item()}
                         metrics.update(old_log_prob_metrics)
                         old_log_prob.batch.pop("entropys")

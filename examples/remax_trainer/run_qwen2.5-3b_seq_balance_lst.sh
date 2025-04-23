@@ -1,13 +1,14 @@
 set -x
 
-export HF_DATASETS_OFFLINE=1
-export TRANSFORMERS_OFFLINE=1
+export HF_DATASETS_OFFLINE=0
+export TRANSFORMERS_OFFLINE=0
 
 export VLLM_ATTENTION_BACKEND=XFORMERS
 # export CUDA_VISIBLE_DEVICES=2,3,6,7
 # export CUDA_VISIBLE_DEVICES=1,2,3,5
 export CUDA_VISIBLE_DEVICES=0,1,2,3
-source /orange/yonghui.wu/yxliu/venv/verl/bin/activate
+conda activate /dev/shm/xil620/anaconda3/verl
+source activate /dev/shm/xil620/anaconda3/verl
 
 python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=remax \
