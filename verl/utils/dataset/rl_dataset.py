@@ -237,13 +237,64 @@ class RLHFDataset(Dataset):
         row_dict["raw_prompt_ids"] = raw_prompt_ids
         # encode prompts without chat template
         if self.return_raw_chat:
-            row_dict["raw_prompt"] = messages
+            row_dict["raw_prompt"] = prompt_messages
 
         # add index for each prompt
         index = row_dict.get("extra_info", {}).get("index", 0)
         row_dict["index"] = index
 
-        return row_dict
+        # --- 处理 Chosen 和 Rejected ---
+        chosen_response_str = original_row_dict.pop(self.chosen_key, None)
+        rejected_response_str = original_row_dict.pop(self.rejected_key, None)
+
+        if chosen_response_str is None or rejected_response_str is None:
+             raise ValueError(f"Missing chosen or rejected response for item {item}")
+
+        # --- 构建 Chosen/Rejected 序列 ---
+        chosen_messages = prompt_messages[:-1] + [{"role": "assistant", "content": chosen_response_str}]
+        rejected_messages = prompt_messages[:-1] + [{"role": "assistant", "content": rejected_response_str}]
+
+        # --- Tokenize Chosen/Rejected 序列 ---
+        chosen_full_str = self.tokenizer.apply_chat_template(chosen_messages, tokenize=False)
+        rejected_full_str = self.tokenizer.apply_chat_template(rejected_messages, tokenize=False)
+
+        chosen_inputs = self.tokenizer(chosen_full_str, return_tensors="pt", padding=False, truncation=False)
+        rejected_inputs = self.tokenizer(rejected_full_str, return_tensors="pt", padding=False, truncation=False)
+
+        chosen_input_ids, chosen_attention_mask = verl_F.postprocess_data(
+            input_ids=chosen_inputs["input_ids"],
+            attention_mask=chosen_inputs["attention_mask"],
+            max_length=self.max_sequence_length,
+            pad_token_id=self.tokenizer.pad_token_id,
+            left_pad=False,
+            truncation=self.truncation,
+        )
+        rejected_input_ids, rejected_attention_mask = verl_F.postprocess_data(
+            input_ids=rejected_inputs["input_ids"],
+            attention_mask=rejected_inputs["attention_mask"],
+            max_length=self.max_sequence_length,
+            pad_token_id=self.tokenizer.pad_token_id,
+            left_pad=False,
+            truncation=self.truncation,
+        )
+
+        # --- 计算 Prompt 长度 (用于后续计算 loss 时忽略 prompt 部分) ---
+        prompt_only_str = self.tokenizer.apply_chat_template(prompt_messages, add_generation_prompt=True, tokenize=False)
+        prompt_only_ids = self.tokenizer(prompt_only_str, return_tensors="pt")["input_ids"]
+        prompt_len = prompt_only_ids.shape[1]
+
+        # --- 返回结果 ---
+        result_dict = {}
+        result_dict["chosen_input_ids"] = chosen_input_ids[0]
+        result_dict["chosen_attention_mask"] = chosen_attention_mask[0]
+        result_dict["rejected_input_ids"] = rejected_input_ids[0]
+        result_dict["rejected_attention_mask"] = rejected_attention_mask[0]
+        result_dict["prompt_len"] = prompt_len
+
+        result_dict.update(original_row_dict)
+        result_dict["index"] = result_dict.get("extra_info", {}).get("index", item)
+
+        return result_dict
 
     def __getstate__(self):
         if not self.serialize_dataset:
