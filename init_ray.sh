@@ -1,5 +1,5 @@
 #!/bin/bash
-export CUDA_VISIBLE_DEVICES=1,2,3,5
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6
 export PET_NODE_RANK=0
 # export NumExpr=32
 export RAY_DEBUG_POST_MORTEM=1
