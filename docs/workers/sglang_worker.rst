@@ -1,5 +1,8 @@
 SGLang Backend
 ==============
+
+Last updated: 05/31/2025.
+
 **Authored By SGLang RL Team and listed alphabetically by last name**
 
 `Jingyi Chen <https://github.com/fzyzcjy>`_, `Yitong Guan <https://github.com/minleminzui>`_, `Zhuobin Huang <https://zobinhuang.github.io/sec_about/>`_, `Jiajun Li <https://github.com/guapisolo>`_, `Ji Li <https://github.com/GeLee-Q>`_, `Shenggui Li <https://franklee.xyz/about>`_, `Junrong Lin <https://github.com/ocss884>`_, `Xiang Long <https://github.com/SwordFaith>`_, `Rui Lu <https://scholar.google.com/citations?user=-MGuqDcAAAAJ>`_, `Jin Pan <https://jhinpan.github.io/>`_, `Shuai Shi <https://github.com/shuaills>`_, `Yushen Su <https://yushengsu-thu.github.io/>`_, `Xinyuan Tong <https://github.com/JustinTong0323>`_, `Chendong Wang <https://github.com/cedricbeta>`_, `Hanchen Zhang <https://scholar.google.com/citations?user=pGcJcagAAAAJ>`_, `Haoran Wang <https://ubecc.github.io/about/>`_, `Yongan Xiang <https://github.com/BearBiscuit05>`_, `Chengxing Xie <https://yitianlian.github.io/>`_, `Yuhao Yang <https://github.com/yhyang201>`_, `Jinwei Yao <https://kivi-yao.github.io/>`_, `Qiaolin Yu <https://github.com/Qiaolin-Yu>`_, `Yuzhen Zhou <https://github.com/zyzshishui>`_, `Chenyang Zhao <https://github.com/zhaochenyang20>`_
@@ -10,18 +13,29 @@ Introduction
 ------------
 `SGLang <https://github.com/sgl-project/sglang>`_ is an open-source state-of-the-art inference service engine, fully adopted by xAI to support all inference needs of Grok during research and serving processes.
 
-Currently, verl fully supports using SGLang as the inference engine during the rollout phase. As a rollout engine, SGLang provides the same feature coverage as vLLM., including memory saving and multi-node rollout features. After installing verl and SGLang, simply add ``actor_rollout_ref.rollout.name=sglang`` at startup to seamlessly switch between the two inference frameworks.
+Currently, verl fully supports using SGLang as the inference engine during the rollout phase. As a rollout engine, SGLang provides the same feature coverage as vLLM., including memory saving and multi-node rollout features. After installing verl and SGLang, simply add ``actor_rollout_ref.rollout.name=sglang`` at startup script to seamlessly switch between the two inference frameworks.
 
 In addition, the SGLang team is actively working on supporting features such as Multi-Turn Agentic RL, VLM RLHF, Server-Based RLHF, and Partial Rollout. You can track the related development progress in the `Tracking Roadmap <https://github.com/zhaochenyang20/Awesome-ML-SYS-Tutorial/issues/74>`_.
 
 Installation
 ------------
-First, follow the requirements outlined in `Install SGLang as rollout backend <https://verl.readthedocs.io/en/latest/start/install.html#install-sglang-as-rollout-backend>`_ for installation, and ensure that the version requirements are met. Generally, using the latest `SGLang <https://github.com/sgl-project/sglang>`_ from the main branch will allow stable training startup without needing to target a specific version.
+Please always follow the following command to install SGLang with verl. 
 
 .. code-block:: bash
+    
+    pip install --upgrade pip
+    # Currently 0.4.6.post5, subject to updates at any time, please refer to the latest version specified in `setup.py`
+    pip install -e ".[sglang]"
 
-    # Currently 0.4.5, subject to updates at any time, please refer to the latest version
-    pip install "sglang[all]>=0.4.5" --find-links https://flashinfer.ai/whl/cu124/torch2.5/flashinfer-python
+You can check the following dependencies are in your environment:
+
+.. note::
+
+    - **PyTorch**: 2.6.0+cu124
+    - **CUDA**: 12.4
+    - **flashinfer-python**: 0.2.5+cu124torch2.6
+    - **sgLang**: 0.4.6.post5
+    - **sgl-kernel**: 0.1.4
 
 Using SGLang as the Inference Backend for PPO Training on a Single Machine
 -------------------------------------------------------------------------
@@ -76,7 +90,7 @@ Why export SGL_DISABLE_TP_MEMORY_INBALANCE_CHECK?
 
 1. ``verl`` initializes a ``SGLangRollout`` module during rollout, which is used to evaluate/generate samples.
 
-2. ``SGLangRollout`` will initialize ``VerlEngine``, and further initialize a ``torch.distributed.DeviceMesh``, used to support Tensor Parallel (TP).
+2. ``SGLangRollout`` will initialize ``Engine``, and further initialize a ``torch.distributed.DeviceMesh``, used to support Tensor Parallel (TP).
 
 3. ``DeviceMesh.init()`` internally checks the free GPU memory of all participating devices. If the difference is too large (more than ~10%), it directly reports an error to avoid initialization failures or deadlocks.
 
@@ -100,7 +114,7 @@ Early workers already use up GPU memory → late workers still have empty memory
 
 **3. SGLang's TP init uses "all-device broadcast", but there's no uniform release timing**
 
-Although ``SGLangRollout`` may only involve subset of GPUs, its ``VerlEngine`` initialization calls ``torch.distributed.init_process_group()`` and broadcasts weights, so:
+Although ``SGLangRollout`` may only involve subset of GPUs, its ``Engine`` initialization calls ``torch.distributed.init_process_group()`` and broadcasts weights, so:
 
 - Non-rollout GPUs also join the communication.
 - Later on, ``DeviceMesh`` init will fail due to "inconsistent memory".

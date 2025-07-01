@@ -7,8 +7,6 @@ export TRANSFORMERS_OFFLINE=0
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6
 export N_GPUS=$(echo $CUDA_VISIBLE_DEVICES | awk -F',' '{print NF}')
 
-# If you are using vllm<=0.6.3, you might need to set the following environment variable to avoid bugs:
-# export VLLM_ATTENTION_BACKEND=XFORMERS
 
 python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=remax \

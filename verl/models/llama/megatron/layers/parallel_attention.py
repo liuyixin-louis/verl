@@ -22,10 +22,14 @@ import math
 from typing import Optional, Tuple
 
 import torch
+import torch.nn.functional as F
+from einops import rearrange
+from flash_attn.layers.rotary import apply_rotary_emb
 from megatron.core import ModelParallelConfig, tensor_parallel
 from megatron.core import parallel_state as mpu
 from torch import nn
 from transformers import LlamaConfig
+from transformers.utils import is_flash_attn_2_available
 
 from verl.models.llama.megatron.layers.parallel_linear import QKVParallelLinear
 from verl.utils.megatron import tensor_parallel as tp_utils
@@ -193,7 +197,8 @@ class ParallelLlamaAttention(nn.Module):
             f"num_head must be divisible by tp_size. Got num_head={self.num_heads}, tp_size={tp_size}"
         )
         assert self.num_key_value_heads % tp_size == 0, (
-            f"num_key_value_heads must be divisible by tp_size. Got num_key_value_heads={self.num_key_value_heads}, tp_size={tp_size}"
+            f"num_key_value_heads must be divisible by tp_size. Got num_key_value_heads="
+            f"{self.num_key_value_heads}, tp_size={tp_size}"
         )
 
         self.num_heads_per_tp = self.num_heads // tp_size
@@ -202,8 +207,8 @@ class ParallelLlamaAttention(nn.Module):
 
         if (self.head_dim * self.num_heads) != self.hidden_size:
             raise ValueError(
-                f"hidden_size must be divisible by num_heads (got `hidden_size`: {self.hidden_size}"
-                f" and `num_heads`: {self.num_heads})."
+                f"hidden_size must be divisible by num_heads (got `hidden_size`: {self.hidden_size} and "
+                f"`num_heads`: {self.num_heads})."
             )
 
         column_kwargs = tp_utils.get_default_kwargs_for_column_parallel_linear()
@@ -305,8 +310,8 @@ class ParallelLlamaAttention(nn.Module):
 
         if attn_weights.size() != (bsz, self.num_heads_per_tp, q_len, kv_seq_len):
             raise ValueError(
-                f"Attention weights should be of size {(bsz, self.num_heads_per_tp, q_len, kv_seq_len)}, but is"
-                f" {attn_weights.size()}"
+                f"Attention weights should be of size {(bsz, self.num_heads_per_tp, q_len, kv_seq_len)}, "
+                f"but is {attn_weights.size()}"
             )
 
         if attention_mask is not None:
@@ -322,8 +327,8 @@ class ParallelLlamaAttention(nn.Module):
 
         if attn_output.size() != (bsz, self.num_heads_per_tp, q_len, self.head_dim):
             raise ValueError(
-                f"`attn_output` should be of size {(bsz, self.num_heads_per_tp, q_len, self.head_dim)}, but is"
-                f" {attn_output.size()}"
+                f"`attn_output` should be of size {(bsz, self.num_heads_per_tp, q_len, self.head_dim)}, "
+                f"but is {attn_output.size()}"
             )
 
         attn_output = attn_output.transpose(1, 2).contiguous()
@@ -338,9 +343,6 @@ Remove padding Attention
 - Compatible with sequence parallel
 """
 
-import torch.nn.functional as F
-from einops import rearrange
-from transformers.utils import is_flash_attn_2_available
 
 if is_flash_attn_2_available():
     from flash_attn import flash_attn_varlen_func
@@ -361,9 +363,6 @@ def apply_rotary_pos_emb_rmpad(q, k, cos, sin, position_ids, indices, sequence_l
     k_embed = index_first_axis(rearrange(k_embed, "b s ... -> (b s) ..."), indices)
 
     return q_embed, k_embed
-
-
-from flash_attn.layers.rotary import apply_rotary_emb
 
 
 # use flash-attn rotary embeddings with rmpad
@@ -417,7 +416,8 @@ class ParallelLlamaAttentionRmPad(ParallelLlamaAttention):
         query_states, key_states = apply_rotary_pos_emb_rmpad_flash(
             query_states, key_states, cos, sin, cu_seqlens=cu_seqlens, max_seqlen=max_seqlen_in_batch
         )
-        # query_states, key_states = apply_rotary_pos_emb_rmpad(query_states, key_states, cos, sin, position_ids, indices,
+        # query_states, key_states = apply_rotary_pos_emb_rmpad(query_states, key_states, cos, sin,
+        # position_ids, indices,
 
         # TODO: llama does not have dropout in the config??
         # It is recommended to use dropout with FA according to the docs

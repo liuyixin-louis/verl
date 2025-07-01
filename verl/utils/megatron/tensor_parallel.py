@@ -16,16 +16,18 @@
 Utilities for using tensor_parallel in megatron
 """
 
-from typing import Dict
+from typing import TYPE_CHECKING, Dict
 
 import torch
 import torch.distributed as dist
-from megatron.core import ModelParallelConfig, tensor_parallel
 from megatron.core import parallel_state as mpu
 from torch.nn import init
 
+if TYPE_CHECKING:
+    from megatron.core import ModelParallelConfig
 
-def update_kwargs_with_config(dictionary: Dict, config: ModelParallelConfig):
+
+def update_kwargs_with_config(dictionary: Dict, config: "ModelParallelConfig"):
     dictionary["config"] = config
     return dictionary
 
@@ -42,6 +44,8 @@ def get_default_kwargs_for_model_parallel_config():
 
 
 def get_default_model_parallel_config():
+    from megatron.core import ModelParallelConfig
+
     return ModelParallelConfig(**get_default_kwargs_for_model_parallel_config())
 
 
@@ -57,6 +61,8 @@ def get_common_default_kwargs_for_parallel_linear():
 
 
 def get_default_kwargs_for_column_parallel_linear():
+    from megatron.core import ModelParallelConfig
+
     model_parallel_config_kwargs = get_default_kwargs_for_model_parallel_config()
     column_parallel_config_kwargs = {
         "async_tensor_model_parallel_allreduce": False,
@@ -76,6 +82,8 @@ def get_default_kwargs_for_row_parallel_linear():
 
 
 def get_default_kwargs_for_parallel_embedding():
+    from megatron.core import ModelParallelConfig
+
     model_parallel_config_kwargs = get_default_kwargs_for_model_parallel_config()
     embedding_default_kwargs = {
         "init_method": init.xavier_normal_,
@@ -145,11 +153,14 @@ def vocab_parallel_entropy(vocab_parallel_logits: torch.Tensor) -> torch.Tensor:
 
 def vocab_parallel_log_probs_from_logits(logits, labels):
     """TODO(zhangchi.usc1992): We may change the implementation later"""
+    from megatron.core import tensor_parallel
+
     return -tensor_parallel.vocab_parallel_cross_entropy(vocab_parallel_logits=logits, target=labels)
 
 
 def vocab_parallel_log_probs_from_logits_response_rmpad(input_ids, attention_mask, logits_rmpad, response_length):
-    """Similar to log_probs_from_logits_response_rmpad, but the logits_rmpad is now spliited across tensor parallel region.
+    """Similar to log_probs_from_logits_response_rmpad, but the logits_rmpad is now spliited across tensor parallel
+    region.
     This will further reduce the peak memory usage during training
 
     Args:

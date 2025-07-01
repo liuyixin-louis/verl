@@ -53,7 +53,11 @@ def build_aime2024_dataset():
 def build_gpqa_dimond_dataset():
     import random
 
-    GPQA_QUERY_TEMPLATE = "Answer the following multiple choice question. The last line of your response should be of the following format: 'Answer: $LETTER' (without quotes) where LETTER is one of ABCD. Think step by step before answering.\n\n{Question}\n\nA) {A}\nB) {B}\nC) {C}\nD) {D}"
+    GPQA_QUERY_TEMPLATE = (
+        "Answer the following multiple choice question. The last line of your response should be of the following "
+        "format: 'Answer: $LETTER' (without quotes) where LETTER is one of ABCD. Think step by step before "
+        "answering.\n\n{Question}\n\nA) {A}\nB) {B}\nC) {C}\nD) {D}"
+    )
 
     def process_gpqa_diamond(example):
         choices = [example["Incorrect Answer 1"], example["Incorrect Answer 2"], example["Incorrect Answer 3"]]
@@ -110,17 +114,19 @@ def build_livecodebench_dataset():
         # Construct Query Prompt
         # From https://github.com/LiveCodeBench/LiveCodeBench/blob/998c52d394b836f15fff3b9a29866191108ff81b/lcb_runner/prompts/code_generation.py#L140
         query_prompt = (
-            "You will be given a question (problem specification) and will generate a correct Python program that matches the specification and passes all tests.\n\n"
-            f"Question: {example['question_content']}\n\n"
+            f"You will be given a question (problem specification) and will generate a correct Python program "
+            f"that matches the specification and passes all tests.\n\nQuestion: {example['question_content']}\n\n"
         )
         if example["starter_code"]:
             query_prompt += (
-                "You will use the following starter code to write the solution to the problem and enclose your code within delimiters.\n"
-                f"```python\n{example['starter_code']}\n```"
+                f"You will use the following starter code to write the solution to the problem and enclose your "
+                f"code within delimiters.\n```python\n{example['starter_code']}\n```"
             )
         else:
             query_prompt += (
-                "Read the inputs from stdin solve the problem and write the answer to stdout (do not directly test on the sample inputs). Enclose your code within delimiters as follows. Ensure that when the python program runs, it reads the inputs, runs the algorithm and writes output to STDOUT."
+                "Read the inputs from stdin solve the problem and write the answer to stdout (do not directly test "
+                "on the sample inputs). Enclose your code within delimiters as follows. Ensure that when the python "
+                "program runs, it reads the inputs, runs the algorithm and writes output to STDOUT."
                 "```python\n# YOUR CODE HERE\n```"
             )
 
@@ -128,7 +134,8 @@ def build_livecodebench_dataset():
         public_test_cases = json.loads(example["public_test_cases"])
         try:
             private_test_cases = json.loads(example["private_test_cases"])
-        except:
+        except Exception as e:
+            print(f"Error loading private test cases: {e}")
             private_test_cases = json.loads(
                 pickle.loads(zlib.decompress(base64.b64decode(example["private_test_cases"].encode("utf-8"))))
             )

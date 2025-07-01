@@ -16,6 +16,7 @@ Utilities to create common models from huggingface
 """
 
 import os
+import re
 import warnings
 from typing import Dict, Optional, Type
 
@@ -28,9 +29,11 @@ from transformers import (
     GenerationConfig,
     MistralForSequenceClassification,
     PretrainedConfig,
+    PreTrainedModel,
 )
 
 from verl.models.registry import ModelRegistry
+from verl.utils.import_utils import is_trl_available
 
 
 class LambdaLayer(nn.Module):
@@ -47,8 +50,16 @@ def squeeze(x):
 
 
 def update_model_config(module_config, override_config_kwargs):
+    """Update the module config with the override_config_kwargs.
+    Args:
+        module_config: The module config from Huggingface Transformers.
+        override_config_kwargs: The kwargs to override the module config.
+    """
     for key, val in override_config_kwargs.items():
-        setattr(module_config, key, val)
+        if isinstance(val, dict):
+            update_model_config(getattr(module_config, key), val)
+        else:
+            setattr(module_config, key, val)
 
 
 def get_huggingface_actor_config(model_name: str, override_config_kwargs=None, trust_remote_code=False) -> Dict:
@@ -207,20 +218,108 @@ def compute_position_id_with_mask(mask):
     return torch.clip(torch.cumsum(mask, dim=-1) - 1, min=0, max=None)
 
 
-def normalize_model_name(name, pp_rank, vpp_rank, pp_size, vpp_size, num_layers, layer_name="layers"):
+def convert_weight_keys(state_dict: Dict[str, torch.Tensor], model: PreTrainedModel):
+    # convert state dict keys: https://github.com/huggingface/transformers/pull/38385
+    if not hasattr(model, "_checkpoint_conversion_mapping"):
+        return state_dict
+
+    reverse_key_mapping = {v: k for k, v in model._checkpoint_conversion_mapping.items()}
+    original_weights = {}
+    for key, value in state_dict.items():
+        for pattern, replacement in reverse_key_mapping.items():
+            replacement = replacement.lstrip("^")  # strip off un-needed chars and patterns
+            replacement = re.sub(r"\(.*\)", "", replacement)
+            key, n_replace = re.subn(pattern, replacement, key)
+            # Early exit of the loop
+            if n_replace > 0:
+                break
+
+        original_weights[key] = value
+
+    return original_weights
+
+
+def check_exclude_modules(config, key: str) -> bool:
+    """
+    A helper method to check if the passed module's key name matches any of the exclude modules in the adapter_config.
+    Adapted from https://github.com/huggingface/peft/blob/main/src/peft/tuners/tuners_utils.py
+
+    Args:
+        config (`LoraConfig` | `LycorisConfig`): A config to match exclude modules from
+        key (`str`): A key to search any matches in config
+
+    Returns:
+        True of match object if key matches any exclude modules from config, False if no match found
+    """
+    if hasattr(config, "exclude_modules") and config.exclude_modules:
+        if isinstance(config.exclude_modules, str):
+            if re.fullmatch(config.exclude_modules, key):
+                return True
+        elif key in config.exclude_modules:
+            return True
+        elif any(key.endswith(f".{exclude_key}") for exclude_key in config.exclude_modules):
+            return True
+    return False
+
+
+def check_target_modules(config, key: str) -> bool:
+    """
+    A helper method to check if the passed module's key name matches any of the target modules in the adapter_config.
+    Adapted from https://github.com/huggingface/peft/blob/main/src/peft/tuners/tuners_utils.py
+
+    Args:
+        config (`LoraConfig` | `LycorisConfig`): A config to match target modules from
+        key (`str`): A key to search any matches in config
+
+    Returns:
+        True of match object if key matches any target modules from config, False if no match found
+    """
+    if isinstance(config.target_modules, str):
+        target_module_found = re.fullmatch(config.target_modules, key)
+    elif key in config.target_modules:
+        # this module is specified directly in target_modules
+        target_module_found = True
+    else:
+        target_module_found = any(key.endswith(f".{target_key}") for target_key in config.target_modules)
+
+        layer_indexes = getattr(config, "layers_to_transform", None)
+        layers_pattern = getattr(config, "layers_pattern", None)
+
+        is_using_layer_indexes = layer_indexes is not None and (
+            len(layer_indexes) != 0 if isinstance(layer_indexes, list) else True
+        )
+        if is_using_layer_indexes and target_module_found:
+            layer_index = None
+            # TODO: It's still unclear how empty layers_pattern (None, [], or "") should behave
+            # For now, empty layers_pattern means any layer pattern is ok
+            if layers_pattern is None or len(layers_pattern) == 0:
+                layer_index = re.match(r".*\.[^.]*\.(\d+)\.", key)
+            else:
+                layers_pattern = [layers_pattern] if isinstance(layers_pattern, str) else layers_pattern
+                for pattern in layers_pattern:
+                    layer_index = re.match(rf".*\.{pattern}\.(\d+)\.", key)
+                    if layer_index is not None:
+                        break
+
+            if layer_index is None:
+                target_module_found = False
+            else:
+                layer_index = int(layer_index.group(1))
+                if isinstance(layer_indexes, int):
+                    target_module_found = layer_index == layer_indexes
+                else:
+                    target_module_found = layer_index in layer_indexes
+
+    return target_module_found
+
+
+def normalize_model_name(name, pp_rank, vpp_rank, transformer_config, layer_name="layers"):
     """
     Transform the model name in each model_chunk in each pp stage into the name in inference engine
     """
-    if vpp_size > 1:
-        # print(f'try to bind vpp params to inference engine...')
-        layers_per_pp = num_layers // pp_size
-        layers_per_vpp = layers_per_pp // vpp_size
-        pp_offset = layers_per_vpp * pp_rank
-        vpp_offset = (layers_per_vpp * pp_size) * vpp_rank
-        layer_offset = pp_offset + vpp_offset
-    else:
-        layers_per_pp = num_layers // pp_size
-        layer_offset = layers_per_pp * pp_rank
+    from verl.utils.megatron_utils import get_transformer_layer_offset
+
+    layer_offset = get_transformer_layer_offset(pp_rank, vpp_rank, transformer_config)
 
     if layer_name in name:  # belong to an intermediate layer
         split_name = name.split(".")
@@ -285,8 +384,8 @@ def _get_parallel_model_architecture_from_config(config: PretrainedConfig, value
         if model_cls is not None:
             return model_cls
     raise ValueError(
-        f"Model architectures {architectures} are not supported for now. "
-        f"Supported architectures: {ModelRegistry.get_supported_archs()}"
+        f"Model architectures {architectures} are not supported for now. Supported architectures: "
+        f"{ModelRegistry.get_supported_archs()}"
     )
 
 
@@ -305,7 +404,9 @@ def _load_hf_model(config, model_config, is_value_model, local_cache_path):
         from verl.utils.fs import copy_to_local
 
         print(f"start download from {config.model.path}")
-        local_model_path = copy_to_local(src=config.model.path, cache_dir=local_cache_path)
+        local_model_path = copy_to_local(
+            src=config.model.path, cache_dir=local_cache_path, use_shm=config.model.get("use_shm", False)
+        )
         print("finish download")
     else:
         local_model_path = config.model.path
@@ -423,10 +524,12 @@ def load_mcore_dist_weights(parallel_model, dist_weight_path, is_value_model=Fal
     from megatron.core import dist_checkpointing
     from megatron.core.dist_checkpointing.serialization import StrictHandling
 
+    from verl.utils.megatron_utils import unwrap_model
+
     # strict = StrictHandling.IGNORE_ALL if is_value_model else StrictHandling.ASSUME_OK_UNEXPECTED
     strict = StrictHandling.ASSUME_OK_UNEXPECTED
     for model in parallel_model:
-        ssd = model.module.module.sharded_state_dict()
+        ssd = unwrap_model(model).sharded_state_dict()
         if is_value_model:
             for k in list(ssd.keys()):
                 if "output_layer" in k:
@@ -461,7 +564,8 @@ def get_parallel_gptmodel_from_config(
         rotary_base=hf_config.rope_theta,
         **rope_scaling_args,
     )
-    # # for layer in parallel_model.decoder.layers: layer.self_attention.core_attention.flash_attention.softmax_scale = None
+    # # for layer in parallel_model.decoder.layers:
+    # layer.self_attention.core_attention.flash_attention.softmax_scale = None
     if post_process and value:
         from verl.models.llama.megatron.layers.parallel_linear import LinearForLastLayer
 
@@ -469,3 +573,71 @@ def get_parallel_gptmodel_from_config(
             input_size=tfconfig.hidden_size, output_size=1, config=tfconfig
         )
     return parallel_model
+
+
+def patch_valuehead_model(model) -> None:
+    from types import MethodType
+
+    from transformers import PreTrainedModel
+    from trl import AutoModelForCausalLMWithValueHead
+
+    def tie_weights(self: "AutoModelForCausalLMWithValueHead") -> None:
+        if isinstance(self.pretrained_model, PreTrainedModel):
+            self.pretrained_model.tie_weights()
+
+    def get_input_embeddings(self: "AutoModelForCausalLMWithValueHead") -> torch.nn.Module:
+        if isinstance(self.pretrained_model, PreTrainedModel):
+            return self.pretrained_model.get_input_embeddings()
+
+    def get_output_embeddings(self: "AutoModelForCausalLMWithValueHead") -> torch.nn.Module:
+        if isinstance(self.pretrained_model, PreTrainedModel):
+            return self.pretrained_model.get_output_embeddings()
+
+    def can_generate(self):
+        return False
+
+    ignore_modules = [name for name, _ in model.named_parameters() if "pretrained_model" in name]
+    model._keys_to_ignore_on_save = ignore_modules
+    model.tie_weights = MethodType(tie_weights, model)
+    model.get_input_embeddings = MethodType(get_input_embeddings, model)
+    model.get_output_embeddings = MethodType(get_output_embeddings, model)
+    model.can_generate = MethodType(can_generate, model)
+    model._no_split_modules = getattr(model.pretrained_model, "_no_split_modules", [])
+
+
+def load_valuehead_model(local_path, torch_dtype, model_config, trust_remote_code):
+    from transformers import AutoModelForCausalLM, AutoModelForTokenClassification, AutoModelForVision2Seq
+
+    try:
+        model = AutoModelForTokenClassification.from_pretrained(
+            pretrained_model_name_or_path=local_path,
+            torch_dtype=torch_dtype,
+            config=model_config,
+            attn_implementation="flash_attention_2",
+            trust_remote_code=trust_remote_code,
+        )
+        return model
+    except BaseException as e:
+        if not is_trl_available():
+            raise RuntimeError(
+                f"model({local_path}) is not a value head model, please install trl to make it valid"
+            ) from e
+
+    assert is_trl_available()
+
+    from trl import AutoModelForCausalLMWithValueHead
+
+    if type(model_config) in AutoModelForVision2Seq._model_mapping.keys():
+        module_class = AutoModelForVision2Seq
+    else:
+        module_class = AutoModelForCausalLM
+    ori_model = module_class.from_pretrained(
+        pretrained_model_name_or_path=local_path,
+        torch_dtype=torch_dtype,
+        config=model_config,
+        attn_implementation="flash_attention_2",
+        trust_remote_code=trust_remote_code,
+    )
+    model = AutoModelForCausalLMWithValueHead.from_pretrained(ori_model)
+    patch_valuehead_model(model)
+    return model

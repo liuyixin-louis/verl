@@ -25,6 +25,7 @@ from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
 import verl.utils.torch_functional as verl_F
 from verl import DataProto
+from verl.utils.device import get_device_name
 from verl.utils.py_functional import append_to_dict
 from verl.utils.seqlen_balancing import get_reverse_idx, rearrange_micro_batches
 from verl.utils.ulysses import gather_outpus_and_unpad, ulysses_pad_and_slice_inputs
@@ -42,6 +43,8 @@ class DataParallelPRIMERewardModel:
         self.reward_optimizer = reward_optimizer
         self.use_remove_padding = self.config.model.get("use_remove_padding", False)
         print(f"Reward model use_remove_padding={self.use_remove_padding}")
+        self.use_fused_kernels = self.config.model.get("use_fused_kernels", False)
+        print(f"Reward model use_fused_kernels={self.use_fused_kernels}")
 
         self.ulysses_sequence_parallel_size = self.config.get("ulysses_sequence_parallel_size", 1)
 
@@ -76,11 +79,27 @@ class DataParallelPRIMERewardModel:
                 input_ids_rmpad_rolled, _, _ = ulysses_pad_and_slice_inputs(
                     input_ids_rmpad_rolled, None, self.ulysses_sequence_parallel_size
                 )
+
             input_ids_rmpad_rolled = input_ids_rmpad_rolled.squeeze(0)
-            rm_output_logits = self.reward_module(
-                input_ids=input_ids_rmpad, attention_mask=None, position_ids=position_ids_rmpad, use_cache=False
-            ).logits.squeeze(0)  # copied. I don't really know why there is a squeeze
-            rm_log_labels = verl_F.logprobs_from_logits(logits=rm_output_logits, labels=input_ids_rmpad_rolled)
+            output = self.reward_module(
+                input_ids=input_ids_rmpad,
+                attention_mask=None,
+                position_ids=position_ids_rmpad,
+                use_cache=False,
+                return_dict=self.use_fused_kernels,
+            )
+
+            if self.use_fused_kernels:
+                rm_log_labels = output.log_probs.squeeze(0)  # (total_nnz,)
+                rm_log_labels = rm_log_labels.to(torch.float32)
+
+            else:
+                rm_output_logits = output.logits.squeeze(0)
+                rm_log_labels = verl_F.logprobs_from_logits(
+                    logits=rm_output_logits,
+                    labels=input_ids_rmpad_rolled,
+                )
+
             if self.ulysses_sequence_parallel_size > 1:
                 rm_log_labels = gather_outpus_and_unpad(rm_log_labels, gather_dim=0, unpad_dim=0, padding_size=pad_size)
             rm_log_labels = pad_input(
@@ -88,29 +107,48 @@ class DataParallelPRIMERewardModel:
             ).squeeze(-1)[:, -num_actions - 1 : -1]
 
         else:
-            rm_output_logits = self.reward_module(
+            output = self.reward_module(
                 input_ids=micro_batch["input_ids"],
                 attention_mask=micro_batch["attention_mask"],
                 position_ids=micro_batch["position_ids"],
                 use_cache=False,
-            ).logits
-            rm_log_prob = torch.nn.functional.log_softmax(
-                rm_output_logits[:, :-1, :], dim=-1
-            )  # (batch_size, seq_length, vocab_size)
-            rm_log_labels = rm_log_prob.gather(dim=-1, index=micro_batch["input_ids"][:, 1:].unsqueeze(-1)).squeeze(
-                -1
-            )  # (batch, seq_length)
+                return_dict=self.use_fused_kernels,
+            )
+
+            if self.use_fused_kernels:
+                rm_log_labels = output.log_probs[:, :-1]  # (bsz, seq_length)
+                rm_log_labels = rm_log_labels.to(torch.float32)
+
+            else:
+                rm_output_logits = output.logits
+                rm_log_prob = torch.nn.functional.log_softmax(
+                    rm_output_logits[:, :-1, :], dim=-1
+                )  # (batch_size, seq_length, vocab_size)
+                rm_log_labels = rm_log_prob.gather(dim=-1, index=micro_batch["input_ids"][:, 1:].unsqueeze(-1)).squeeze(
+                    -1
+                )  # (batch, seq_length)
 
         if self.ref_module is not None:
             # do not have to pad again
-            with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            with torch.no_grad(), torch.autocast(device_type=get_device_name(), dtype=torch.bfloat16):
                 if self.ulysses_sequence_parallel_size > 1 and self.use_remove_padding:
-                    ref_output_logits = self.ref_module(
-                        input_ids=input_ids_rmpad, attention_mask=None, position_ids=position_ids_rmpad, use_cache=False
-                    ).logits.squeeze(0)
-                    ref_log_labels = verl_F.logprobs_from_logits(
-                        logits=ref_output_logits, labels=input_ids_rmpad_rolled
+                    ref_output = self.ref_module(
+                        input_ids=input_ids_rmpad,
+                        attention_mask=None,
+                        position_ids=position_ids_rmpad,
+                        use_cache=False,
                     )
+
+                    if self.use_fused_kernels:
+                        ref_log_labels = ref_output.log_probs.squeeze(0)  # (total_nnz,)
+                        ref_log_labels = ref_log_labels.to(torch.float32)
+
+                    else:
+                        ref_output_logits = ref_output.logits.squeeze(0)
+                        ref_log_labels = verl_F.logprobs_from_logits(
+                            logits=ref_output_logits, labels=input_ids_rmpad_rolled
+                        )
+
                     ref_log_labels = gather_outpus_and_unpad(
                         ref_log_labels, gather_dim=0, unpad_dim=0, padding_size=pad_size
                     )
@@ -118,18 +156,26 @@ class DataParallelPRIMERewardModel:
                         hidden_states=ref_log_labels.unsqueeze(-1), indices=indices, batch=batch_size, seqlen=seqlen
                     ).squeeze(-1)[:, -num_actions - 1 : -1]
                 else:
-                    ref_output_logits = self.ref_module(
+                    ref_output = self.ref_module(
                         input_ids=micro_batch["input_ids"],
                         attention_mask=micro_batch["attention_mask"],
                         position_ids=micro_batch["position_ids"],
                         use_cache=False,
-                    ).logits
-                    ref_log_prob = torch.nn.functional.log_softmax(
-                        ref_output_logits[:, :-1, :], dim=-1
-                    )  # (batch_size, seq_length, vocab_size)
-                    ref_log_labels = ref_log_prob.gather(
-                        dim=-1, index=micro_batch["input_ids"][:, 1:].unsqueeze(-1)
-                    ).squeeze(-1)  # (batch, seq_length)
+                    )
+
+                    if self.use_fused_kernels:
+                        ref_log_labels = ref_output.log_probs[:, :-1]  # (batch_size, seq_length)
+                        ref_log_labels = ref_log_labels.to(torch.float32)
+
+                    else:
+                        ref_output_logits = ref_output.logits
+                        ref_log_prob = torch.nn.functional.log_softmax(
+                            ref_output_logits[:, :-1, :], dim=-1
+                        )  # (batch_size, seq_length, vocab_size)
+                        ref_log_labels = ref_log_prob.gather(
+                            dim=-1, index=micro_batch["input_ids"][:, 1:].unsqueeze(-1)
+                        ).squeeze(-1)  # (batch, seq_length)
+
         else:
             ref_log_labels = micro_batch["old_log_probs"]
 
@@ -142,7 +188,8 @@ class DataParallelPRIMERewardModel:
 
         # reward computation does not need gradient. only q needs
         with torch.no_grad():
-            # generalized estimation of r should go before the reward filling. r means process reward for policy model, or the advantage of reward model.
+            # generalized estimation of r should go before the reward filling. r means process reward for policy
+            # model, or the advantage of reward model.
             lam = self.config.get("lambda", 0.0)
             beta = self.config.model.get("beta_train", 0.05)
             if lam == 0.0:
@@ -153,7 +200,8 @@ class DataParallelPRIMERewardModel:
                 q_ = q * beta
                 r = torch.zeros_like(q)
                 lastgaelam = 0
-                # change the last token and mask out all paddings to make this process easier if we rely on outcome reward to calculate V
+                # change the last token and mask out all paddings to make this process easier if we rely on
+                # outcome reward to calculate V
                 for i in range(q.shape[0]):
                     if self.config.prime_use_gt:
                         q_[i, max_positions[i] - 1] = acc[i] - q_[i, : max_positions[i] - 1].sum()
@@ -272,7 +320,7 @@ class DataParallelPRIMERewardModel:
             self.reward_optimizer.zero_grad()
 
             for data in micro_batches:
-                data = data.cuda()
+                data = data.to(get_device_name())
                 attention_mask = data["attention_mask"]
                 acc = data["acc"]
 
@@ -289,7 +337,8 @@ class DataParallelPRIMERewardModel:
                 if self.config.model.loss_type == "ce":
                     dpo_loss = compute_ce_dpo_loss_rm(q, acc, response_mask=response_mask, beta=beta)
                 elif self.config.model.loss_type == "dpo":
-                    # the implementation of dpo is actually detached, which means we have to know the average value of w/l reward before the update.
+                    # the implementation of dpo is actually detached, which means we have to know the average
+                    # value of w/l reward before the update.
                     dpo_loss = compute_detach_dpo_loss_rm(
                         q, acc, Q_bc=data["Q_bc"], acc_bc=data["acc_bc"], response_mask=response_mask, beta=beta
                     )

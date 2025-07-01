@@ -99,7 +99,7 @@ def fix_fracs(string):
             else:
                 try:
                     assert len(substr) >= 2
-                except AssertionError:
+                except:  # noqa: E722
                     return string
                 a = substr[0]
                 b = substr[1]
@@ -130,7 +130,7 @@ def fix_a_slash_b(string):
         assert string == "{}/{}".format(a, b)
         new_string = "\\frac{" + str(a) + "}{" + str(b) + "}"
         return new_string
-    except AssertionError:
+    except:  # noqa: E722
         return string
 
 
@@ -210,7 +210,8 @@ def strip_string(string):
     # remove spaces
     string = string.replace(" ", "")
 
-    # \frac1b or \frac12 --> \frac{1}{b} and \frac{1}{2}, etc. Even works with \frac1{72} (but not \frac{72}1). Also does a/b --> \\frac{a}{b}
+    # \frac1b or \frac12 --> \frac{1}{b} and \frac{1}{2}, etc. Even works with \frac1{72} (but not \frac{72}1).
+    # Also does a/b --> \\frac{a}{b}
     string = fix_fracs(string)
 
     # manually change 0.5 --> \frac{1}{2}
